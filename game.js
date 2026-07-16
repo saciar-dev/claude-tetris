@@ -35,12 +35,13 @@ const nextCtx = nextCanvas.getContext('2d');
 const scoreEl = document.getElementById('score');
 const linesEl = document.getElementById('lines');
 const levelEl = document.getElementById('level');
+const comboEl = document.getElementById('combo');
 const overlay = document.getElementById('overlay');
 const overlayTitle = document.getElementById('overlay-title');
 const overlayScore = document.getElementById('overlay-score');
 const restartBtn = document.getElementById('restart-btn');
 
-let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
+let board, current, next, score, lines, level, combo, comboFlash, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
 
 function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
@@ -105,9 +106,16 @@ function clearLines() {
   }
   if (cleared) {
     lines += cleared;
-    score += (LINE_SCORES[cleared] || 0) * level;
+    combo++;
+    score += (LINE_SCORES[cleared] || 0) * level * combo;
     level = Math.floor(lines / 10) + 1;
     dropInterval = Math.max(100, 1000 - (level - 1) * 90);
+    if (combo >= 2) {
+      comboFlash = { text: `COMBO x${combo}`, until: performance.now() + 800 };
+    }
+    updateHUD();
+  } else {
+    combo = 0;
     updateHUD();
   }
 }
@@ -154,6 +162,7 @@ function updateHUD() {
   scoreEl.textContent = score.toLocaleString();
   linesEl.textContent = lines;
   levelEl.textContent = level;
+  comboEl.textContent = 'x' + Math.max(1, combo);
 }
 
 function drawBlock(context, x, y, colorIndex, size, alpha) {
@@ -205,6 +214,20 @@ function draw() {
   for (let r = 0; r < current.shape.length; r++)
     for (let c = 0; c < current.shape[r].length; c++)
       drawBlock(ctx, current.x + c, current.y + r, current.shape[r][c], BLOCK);
+
+  // combo flash
+  const remaining = comboFlash.until - performance.now();
+  if (remaining > 0) {
+    ctx.globalAlpha = Math.min(1, remaining / 300);
+    ctx.fillStyle = '#7aa2f7';
+    ctx.font = 'bold 24px system-ui, -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(comboFlash.text, canvas.width / 2, canvas.height / 2);
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'alphabetic';
+  }
 }
 
 function drawNext() {
@@ -261,6 +284,8 @@ function init() {
   score = 0;
   lines = 0;
   level = 1;
+  combo = 0;
+  comboFlash = { text: '', until: 0 };
   paused = false;
   gameOver = false;
   dropInterval = 1000;
