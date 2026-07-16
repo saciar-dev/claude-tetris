@@ -40,8 +40,10 @@ const overlay = document.getElementById('overlay');
 const overlayTitle = document.getElementById('overlay-title');
 const overlayScore = document.getElementById('overlay-score');
 const restartBtn = document.getElementById('restart-btn');
+const muteIndicator = document.getElementById('mute-indicator');
 
 let board, current, next, score, lines, level, combo, comboFlash, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
+let shake, rowFlash, audioCtx, muted = false;
 
 function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
@@ -94,10 +96,50 @@ function merge() {
         board[current.y + r][current.x + c] = current.shape[r][c];
 }
 
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+function toggleMute() {
+  muted = !muted;
+  if (muteIndicator) muteIndicator.textContent = muted ? '🔇' : '🔊';
+}
+
+function playComboSound(comboCount) {
+  if (muted || !audioCtx) return;
+  const now = audioCtx.currentTime;
+  // pentatonic-ish ascending scale indexed by combo, so higher combos sound higher-pitched
+  const scale = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66, 1318.51];
+  const freq = scale[Math.min(comboCount - 2, scale.length - 1)];
+  const playTone = (frequency, delay, gainScale) => {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.value = frequency;
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    const startAt = now + delay;
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(0.3 * gainScale, startAt + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.22);
+    osc.start(startAt);
+    osc.stop(startAt + 0.25);
+  };
+  playTone(freq, 0, 1);
+  if (comboCount >= 4) {
+    // add a fifth above for extra emphasis on big combos
+    playTone(freq * 1.5, 0.03, 0.6);
+  }
+}
+
 function clearLines() {
   let cleared = 0;
+  const clearedRows = [];
   for (let r = ROWS - 1; r >= 0; r--) {
     if (board[r].every(v => v !== 0)) {
+      clearedRows.push(r);
       board.splice(r, 1);
       board.unshift(new Array(COLS).fill(0));
       cleared++;
@@ -110,8 +152,13 @@ function clearLines() {
     score += (LINE_SCORES[cleared] || 0) * level * combo;
     level = Math.floor(lines / 10) + 1;
     dropInterval = Math.max(100, 1000 - (level - 1) * 90);
+    const now = performance.now();
+    rowFlash = { rows: clearedRows, until: now + 250 };
     if (combo >= 2) {
-      comboFlash = { text: `COMBO x${combo}`, until: performance.now() + 800 };
+      comboFlash = { text: `COMBO x${combo}`, combo, start: now, until: now + 900 };
+      const magnitude = Math.min(8, 2 + combo * 1.2);
+      shake = { until: now + 300, magnitude };
+      playComboSound(combo);
     }
     updateHUD();
   } else {
@@ -195,13 +242,34 @@ function drawGrid() {
 }
 
 function draw() {
+  const now = performance.now();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.save();
+  const shakeRemaining = shake.until - now;
+  if (shakeRemaining > 0) {
+    const decay = shakeRemaining / 300;
+    const mag = shake.magnitude * decay;
+    ctx.translate((Math.random() * 2 - 1) * mag, (Math.random() * 2 - 1) * mag);
+  }
+
   drawGrid();
 
   // board
   for (let r = 0; r < ROWS; r++)
     for (let c = 0; c < COLS; c++)
       drawBlock(ctx, c, r, board[r][c], BLOCK);
+
+  // row flash on cleared lines
+  const rowFlashRemaining = rowFlash.until - now;
+  if (rowFlashRemaining > 0) {
+    ctx.globalAlpha = Math.min(1, rowFlashRemaining / 250);
+    ctx.fillStyle = '#ffffff';
+    for (const r of rowFlash.rows) {
+      ctx.fillRect(0, r * BLOCK, COLS * BLOCK, BLOCK);
+    }
+    ctx.globalAlpha = 1;
+  }
 
   // ghost
   const gy = ghostY();
@@ -216,18 +284,33 @@ function draw() {
       drawBlock(ctx, current.x + c, current.y + r, current.shape[r][c], BLOCK);
 
   // combo flash
-  const remaining = comboFlash.until - performance.now();
+  const remaining = comboFlash.until - now;
   if (remaining > 0) {
+    const elapsed = now - comboFlash.start;
+    const popDuration = 150;
+    const scale = elapsed < popDuration
+      ? 1.4 - (0.4 * (elapsed / popDuration))
+      : 1.0;
+    const comboColors = ['#7aa2f7', '#81c784', '#ffd54f', '#ffb74d', '#e57373', '#ba68c8'];
+    const color = comboColors[Math.min(comboFlash.combo - 2, comboColors.length - 1)];
+    const fontSize = 24 + Math.min(comboFlash.combo, 6) * 3;
+
     ctx.globalAlpha = Math.min(1, remaining / 300);
-    ctx.fillStyle = '#7aa2f7';
-    ctx.font = 'bold 24px system-ui, -apple-system, sans-serif';
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.scale(scale, scale);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 16;
+    ctx.fillStyle = color;
+    ctx.font = `bold ${fontSize}px system-ui, -apple-system, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(comboFlash.text, canvas.width / 2, canvas.height / 2);
+    ctx.fillText(comboFlash.text, 0, 0);
+    ctx.restore();
     ctx.globalAlpha = 1;
-    ctx.textAlign = 'start';
-    ctx.textBaseline = 'alphabetic';
   }
+
+  ctx.restore();
 }
 
 function drawNext() {
@@ -286,7 +369,9 @@ function init() {
   lines = 0;
   level = 1;
   combo = 0;
-  comboFlash = { text: '', until: 0 };
+  comboFlash = { text: '', combo: 0, start: 0, until: 0 };
+  shake = { until: 0, magnitude: 0 };
+  rowFlash = { rows: [], until: 0 };
   paused = false;
   gameOver = false;
   dropInterval = 1000;
@@ -301,7 +386,9 @@ function init() {
 }
 
 document.addEventListener('keydown', e => {
+  initAudio();
   if (e.code === 'KeyP') { togglePause(); return; }
+  if (e.code === 'KeyM') { toggleMute(); return; }
   if (paused || gameOver) return;
   switch (e.code) {
     case 'ArrowLeft':
